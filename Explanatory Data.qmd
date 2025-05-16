@@ -1,0 +1,414 @@
+---
+title: 'Explanatory Data'
+author: "David Jolly"
+date: '`r lubridate::today()`'
+format: 
+  html: 
+    embed-resources: true
+    toc: true 
+    toc_depth: 4
+editor_options: 
+  chunk_output_type: console
+---
+
+## Setup
+
+### Handle conflicts
+```{r}
+options(conflicts.policy = "depends.ok")
+devtools::source_url("https://github.com/jjcurtin/lab_support/blob/main/fun_ml.R?raw=true")
+tidymodels_conflictRules()
+```
+Read in John's package's and load in tidymmodel conflicts. We do this so that we can important custom functions that will be helpful for us in the future. Set conflicts to depends.ok for renderign 
+### Load required packages 
+```{r}
+library(tidyverse) 
+library(tidymodels)
+library(tidyposterior)
+library(xfun, include.only = "cache_rds")
+library(dplyr)
+library(cowplot, include.only = c("plot_grid", "theme_half_open"))
+library(recipes)
+library(discrim, exclude = 'smoothness')
+conflictRules("Matrix", mask.ok = c("expand", "pack", "unpack"))
+```
+I then loaded required packages that would be used throughout the workflow. 
+### Source function scripts (John's or your own)
+```{r}
+devtools::source_url("https://github.com/jjcurtin/lab_support/blob/main/fun_plots.R?raw=true")
+devtools::source_url("https://github.com/jjcurtin/lab_support/blob/main/fun_eda.R?raw=true")
+```
+I sourced more functions that will help me with my explanatory analyses. 
+### Specify other global settings
+```{r}
+theme_set(theme_classic())
+options(tibble.width = Inf, dplyr.print_max=Inf)
+rerun_setting <- FALSE
+```
+Set my theme to classic and rerun_settign to FALSE for caching. 
+### Paths
+```{r}
+path_data <- 'homework/application_exam_2'
+```
+### Read in Data
+```{r}
+data_all <- read_csv(here::here(path_data, 'tips.csv'), col_types = cols()) |> 
+  janitor::clean_names() |> 
+  glimpse()
+
+skimr::skim_without_charts(data_all)
+
+```
+I read the data in and used janitor::clean_names() to set the variables to snake_case for better analysis. And examined the data to understand what I am dealing with in my dataset. I found that some variables were not coded correctly for analysis, so I will have to transform them in the nextstep. 
+### Clean data
+```{r}
+data_eda <- initial_split(data_all, prop = 3/4) |> 
+  assessment()
+data_eda <- data_eda |> 
+  mutate(number_drinks = if_else(number_drinks == 0, 'no_drinks', 'had_drinks'),
+         across(where(is.character), factor))
+
+data_eda |> 
+  select(where(is.numeric)) |> 
+  names() |> 
+  map(\(name) plot_box_violin(df = data_all, x = name)) |> 
+  cowplot::plot_grid(plotlist = _, ncol = 3)
+
+data_eda |> 
+  select(where(is.factor)) |>
+  names() |> 
+  map(\(name) plot_bar(df = data_eda, x = name)) |> 
+  cowplot::plot_grid(plotlist = _, ncol = 4)
+
+data_all <- data_all |> 
+  mutate(number_drinks = if_else(number_drinks == 0, 'no_drinks', 'had_drinks'),
+         across(where(is.character), factor),
+         number_drinks = factor(number_drinks, levels = c('had_drinks', 'no_drinks')))
+glimpse(data_all)
+```
+Through this codechunk I did an initial split of the data, to understand what I was examing and how the data will be split. 
+
+I visually examined the distribution with this data after the split through a violin plot and box plots. I found very skewed distributions for normal_drinks. I decided to dummy code this variable because there were many people who did not have any drinks and very few who had 1 or more. This will help me when creating my recipes. 
+
+### Split data
+```{r}
+set.seed(123456)
+initial_split <- initial_split(data_all, prop = 3/4)
+data_trn <- training(initial_split)
+data_tst <- testing(initial_split)
+```
+I split the data into a 75%/25% training test split. This allows me to reserve held-out data for analyses and proper training and testing. 
+### Re-Clean Data
+```{r}
+data_trn <- data_trn |> 
+  mutate(number_drinks = if_else(number_drinks == 0, 'no_drinks', 'had_drinks'),
+         across(where(is.character), factor),
+         number_drinks = factor(number_drinks, levels = c('had_drinks', 'no_drinks')))
+```
+I had to re clean the data here, as it did not update into my training set. If I did not do this step, I could not fit any recipes.
+### CV fold split
+```{r}
+set.seed(123456)
+splits <- vfold_cv(data_trn, v = 10, repeats = 3)
+```
+I did a repeated 10-fold cross validation with 3 repeats on the training data. This gives me stable model performance estimates and lets the observations be used in training validation multiple times. 
+### Full Model
+```{r}
+rec_full <- recipe(tip_percentage ~  ., data = data_trn) |> 
+  step_impute_median(all_numeric_predictors()) |> 
+  step_impute_mode(all_nominal_predictors()) |>   
+  step_dummy(all_nominal_predictors()) |> 
+  step_zv(all_predictors())
+
+rec_full_log <- recipe(tip_percentage ~  ., data = data_trn) |> 
+  step_impute_median(all_numeric_predictors()) |> 
+  step_impute_mode(all_nominal_predictors()) |>  
+  step_log(customer_age, offset = 1) |> 
+  step_dummy(all_nominal_predictors()) |> 
+  step_zv(all_predictors())
+
+rec_full |> 
+  prep(data_trn) |> 
+  bake(NULL) |> 
+  skim_all()
+
+rec_full_log |> 
+  prep(data_trn) |> 
+  bake(NULL) |> 
+  skim_all()
+```
+Here I create a recipe that will fit a model that regressions all predictors on tip_percentage. I set all missing values to either the median or mode depending if they are are nominal or numeric. Dummy code any variables that were set as categorical in order to run my analyses and removed any predictors with zero variance in step_zv. 
+
+Then I prepped my data and baked it based on my training dataset. And examined the rec_full output to ensure all of my data was correct, and to see what the output variables were.
+ 
+ 
+In addition, I made a log transformation of age to see the impact it would have on our model. I used the step_log function with our predictor and offset it by 1, which will add a constant value before it applies the logarithic transformation. 
+### Hyperparameter tuning
+```{r}
+tune_grid <- expand_grid(penalty = exp(seq(-1, .2, length.out = 200)),
+                         mixture = seq(0.1, .5, length.out = 5))
+
+```
+Here I set my hyperparameter ranges. This was the end product I created after examining possible values and changing the range to fit the model correctly. This helps identify the best regularization settings for my glmnet model. 
+### Fit full model
+```{r}
+fits_full <- linear_reg(penalty = tune(),
+                 mixture = tune()) |> 
+    set_engine("glmnet") |> 
+    tune_grid(preprocessor = rec_full,
+              resamples = splits,
+              grid = tune_grid,
+              metrics = metric_set(rmse))
+
+fits_full_log <- linear_reg(penalty = tune(),
+                 mixture = tune()) |> 
+    set_engine("glmnet") |> 
+    tune_grid(preprocessor = rec_full_log,
+              resamples = splits,
+              grid = tune_grid,
+              metrics = metric_set(rmse))
+
+```
+Here I fit my full model. I wanted to do a linear regression here because my tip_percentage variable is numeric. I tune my hyperparameters to find the best values within the specified ranges. I am running a glmnet model, so that is what I set the engine to. 
+
+Next I specified my tune_grid, in order to run the correct metrics, preprocessor, resamples, and grid. These are how my model will run. Based on what recipe, how many samples from my splits data, what grid for hyperparameters, and what metric to test it against. 
+
+I did the same process with my log model!
+### Check Full Hyperparameters
+```{r}
+plot_hyperparameters(fits_full, hp1 = "penalty", hp2 = "mixture", metric = "rmse")
+```
+I visualized my hyperparameter ranges. This is what I used tune my ranges to get low rmse rates.
+### Examine performance metric
+```{r}
+collect_metrics(fits_full) |> 
+  arrange(desc(mean)) |> 
+  print(n = 10)
+
+
+collect_metrics(fits_full_log) |> 
+  arrange(desc(mean)) |> 
+  print(n=10)
+```
+I extracted the top 10 performing hyperparameter combinations. I got some very similarly low RMSE scores for both the log transformation and the non-transformed predictor. This leads me to think that I will not want to use the transformed predictor. (6.19 vs 6.17)
+### Examine RMSE 
+```{r}
+best_linear <- collect_metrics(fits_full) |> 
+  arrange(mean) |> 
+  slice(1) |> 
+  print()
+
+hp_best_full <- select_best(fits_full)
+
+best_log <- collect_metrics(fits_full_log) |> 
+  arrange(mean) |> 
+  slice(1) |> 
+  print()
+```
+I selected the best-performing model configuration from the full model. It returned a penalty of .893. We can see here that the transformation actually inflated our RMSE mean by .02 (6.09 vs 6.07). So because of this, I am going to keep my customer_age predictor as it is, with no transformation.
+### Compact model
+```{r}
+rec_compact <- rec_full |> 
+  step_rm(day_Sat, time_Lunch, group_size)
+
+fits_compact <- linear_reg(penalty = tune(),
+                 mixture = tune()) |> 
+    set_engine("glmnet") |> 
+    tune_grid(preprocessor = rec_compact,
+              resamples = splits,
+              grid = tune_grid,
+              metrics = metric_set(rmse))
+
+fits_compact |> 
+  plot_hyperparameters(hp1 = "penalty", hp2 = "mixture", metric = "rmse", 
+                       log_hp1 = TRUE)
+
+hp_best_compact <- select_best(fits_compact) |> 
+  print()
+
+collect_metrics(fits_compact) |> 
+  arrange(desc(mean)) |> 
+  print(n = 10)
+```
+I did a similar method that I did in the full model, but removed some variables that I predicted would correlate with the outcome variable, which were if the day at the restaurant was Saturday, if it was lunch time, and the group size. I did not think these variables would not have meaningful impact to the age-to-tip ratio.
+
+I fit a model that used this recipe as it's preprocessor. Visualized it's performance with it's hyperparameters. And pulled out the best score which was a penalty of .488. As well as a top 10 performing models with a mean rmse of 6.17, which very slightly increased from the full model. 
+
+### Examine Compact Full Performance Metric vs Full 
+```{r}
+collect_metrics(fits_full) |> 
+  arrange(desc(mean)) |> 
+  slice(1)
+
+collect_metrics(fits_compact) |> 
+  arrange(desc(mean)) |> 
+  slice(1)
+
+cv_full <- collect_metrics(fits_full, summarize = FALSE) |> 
+  filter(.config == hp_best_full$.config) |> 
+  pull(.estimate)
+
+cv_full
+
+cv_compact <- collect_metrics(fits_compact, summarize = FALSE) |> 
+  filter(.config == hp_best_compact$.config) |> 
+  pull(.estimate)
+
+cv_compact
+```
+I used collect_mettrics(fits..., summarize = FALSE) with both models separately. This gave me 30 resample estimates per model for some comparisons. These samples were very similar, which is something to note right now. 
+
+### NB t-test
+```{r}
+nb_correlated_t_test <- function(cv_full, cv_compact, k = 10){
+  diffs <- cv_full - cv_compact
+  n <- length(diffs)
+  mean_diff <- mean(diffs)
+  var_diffs <- var(diffs)
+  proportion_test <- 1 / k
+  proportion_train <- 1 - proportion_test
+  correction <- (1 / n) + (proportion_test / proportion_train)
+  se = sqrt(correction * var_diffs)
+  t = abs(mean_diff/se)
+  p_value <- 2 * pt(t, n - 1, lower.tail = FALSE)
+  tibble(mean_diff = mean_diff, se = se, t = t, df = n - 1, p_value = p_value)
+}
+
+nb_correlated_t_test(cv_full, cv_compact, k = 10)
+
+```
+I ran a Nadeau & Bengio corrected t-test with both the full and compact model. This gave me the dependency in the repeated CV folds and test the difference is statistically signficant. This result was non-significant with a p-value of .958.
+### Interaction model
+```{r}
+rec_interaction <- recipe(tip_percentage ~ ., data = data_trn) |> 
+  step_impute_median(all_numeric_predictors()) |> 
+  step_impute_mode(all_nominal_predictors()) |>   
+  step_dummy(all_nominal_predictors()) |> 
+  step_zv(all_predictors()) |> 
+  step_interact(terms = ~ customer_age:customer_sex_Male)
+
+fits_interaction <- linear_reg(penalty = tune(),
+                               mixture = tune()) |> 
+  set_engine("glmnet") |> 
+  tune_grid(preprocessor = rec_interaction,
+            resamples = splits,
+            grid = tune_grid,
+            metrics = metric_set(rmse))
+
+hp_best_interaction <- select_best(fits_interaction) |> print()
+```
+Similarily to the first two models I created, I did so again with the interaction of age and sex. This model had a penalty of .887, the highest thus far. This helped test if tipping was caused by two variables, not just our focus age predictor. 
+### Testing Model Configurations
+```{r}
+rmse_full <-
+  collect_metrics(fits_full, summarize = FALSE) |>
+  filter(.config == select_best(fits_full)$.config) |> 
+  select(id, id2, full = .estimate)
+
+rmse_compact <-
+     collect_metrics(fits_compact, summarize = FALSE) |>
+     filter(.config == select_best(fits_compact)$.config) |> 
+     select(id, id2, compact = .estimate)
+
+rmse_interaction <- 
+  collect_metrics(fits_interaction, summarize = FALSE) |> 
+  filter(.config == select_best(fits_interaction)$.config) |> 
+  select(id, id2, interaction = .estimate)
+
+rmse_all <- rmse_full |> 
+  full_join(rmse_compact, by = c("id", "id2")) |> 
+  full_join(rmse_interaction, by = c("id", "id2")) |> 
+  print()
+```
+Next, I extracted the best rmse values of each of the different model. After pulling these, I combined them into a single dataframe so they would be passed in the Bayesian model comparison to determine the differnce in my feature ablation process. I did this by full_join the rmse values and assigning them to the id1 and 2 of the collect_metric configuration feature. 
+#### Posterior Probability
+```{r}
+pp <- tidyposterior::perf_mod(rmse_all, 
+                    formula = statistic ~ model + (1 | id2/id),
+                    iter = 3000, chains = 4,  
+                    hetero_var = TRUE,
+                    adapt_delta = 0.999)  
+```
+Now I started my Bayesian model comparison by making a posterior probability using the combined rmse extracted values. This gave me posterior distributions of expected model perfromacnes while accounting for the different resampling structures. 
+```{r}
+pp_tidy <- pp |> 
+  tidy(seed = 123) 
+
+pp_tidy |> 
+  group_by(model) |> 
+  summarize(mean = mean(posterior),
+            lower = quantile(posterior, probs = .025), 
+            upper = quantile(posterior, probs = .975)) |> 
+  mutate(model = factor(model, levels = c("full", "compact", "interaction"))) |> 
+  arrange(model)
+```
+In this step, I set a seed after tidying it from the estimates I got in the previous step. Then I got the mean and credible intervals for each of my three models. This step will allow me to begin to assess the models that will perform and compare how my features change the models.
+#### Graph
+```{r}
+ci <- pp_tidy |> 
+  summary() |> 
+  mutate(y = 450)
+
+pp_tidy |> 
+  ggplot(aes(x = posterior)) + 
+  geom_histogram(aes(x = posterior, fill = model), color = "white", bins = 50) +  
+  geom_segment(mapping = aes(y = y+50, yend = y-50, x = mean, xend = mean,
+                           color = model),
+               data = ci) +
+  geom_segment(mapping = aes(y = y, yend = y, x = lower, xend = upper, color = model),
+                data = ci) +
+  facet_wrap(~ model, ncol = 1) +
+  theme(legend.position = "none") +
+  ylab("Count") +
+  xlab("R Squared")
+```
+I graphed this Bayesian posterior probability using ggplot. I summarized the posterior probability and created a new variable with a value of 450. Then took a summary of a posterior distribution and created the Y column of 450. Then I used ggplot to create a visualization of a histogram of these posterior values, which are R-Square values. I made three different histograms, one for each of my models, so we can see how they differ in R Square. As we can see, they are very similar across all three models.
+#### Comparison
+```{r}
+pp_contrast <- pp |> 
+  contrast_models(seed = 12) |>
+  summary(size = .01) |> 
+  glimpse()
+
+collect_metrics(fits_full) |> 
+  arrange(mean) |> 
+  slice(1)
+
+collect_metrics(fits_compact) |> 
+  arrange(mean) |> 
+  slice(1)
+
+collect_metrics(fits_interaction) |> 
+  arrange(mean) |> 
+  slice(1)
+
+```
+In this code chunk, I compare the three models on different scales. My mean $R^2$ is the highest for my compact model over both the other models (-.0043 and +.0017) and a 43% 42% for posterior lies within ROPE. The pract_pos has a meaningfully better model than both the full and interaction models. However, the evidence is that the models are practically the same, with lots of overlaps. Then I arranged the three models 1 mean of their performance metric and fits_compact had the lowest by .01 compared to the other two models that had the same score. 
+### Final Model
+```{r}
+rec_final <- prep(rec_compact)
+
+
+final_model <- linear_reg(penalty = hp_best_compact$penalty,
+                          mixture = hp_best_compact$mixture) |> 
+  set_engine("glmnet") |> 
+  fit(tip_percentage ~ ., data = data_trn)
+```
+I fit this final model using the recipe as the data. This recipe is with my best performing model of the three, rec_compact. I did this using all of the data_trn with it's same parameters so we are ready for modeling. Fit a linear regression using the best penalty and the best mixture for the compact, set the engine and fit the data on all the remaining predictors in my rec_compact. 
+
+## Summary
+I considered three candidate model configurations to evaluate how different modeling decisions impacted performance. First, I fit a full model that included all available predictors to establish a baseline. Second, I fit a compact model that removed day, time, and group size—variables I hypothesized might not meaningfully contribute to explaining tip percentage. This allowed me to test whether simplifying the model improved model performance Third, I tested an interaction model that included an interaction term between customer age and sex to assess whether the relationship between age and tipping behavior varied by gender.
+
+In all three configurations, I used a glmnet model to apply regularization, which reduces overfitting and supports hyperparameter tuning for both penalty and mixture. By varying model complexity and feature inclusion, I explored how different analytic decisions influenced model performance and explanatory value. I also examined the whether or not we needed a log transformation for our focal predictor, "customer_age". After running a model comparison between the linear and the log transformations, linear yielded a lower RMSE, so we will not do a transformation. 
+
+I used 10-fold cross-validation with 3 repeats on the training data. I did this resampling approach because it provides stable performance estimates by allowing each observation to be used for both training and validation multiple times. Repeating the folds helps average out variability due to random partitioning and handle outliers with resampling.
+
+I chose this method to balance reliability and computational feasibility. Compared to a single train/test split, repeated CV gives a more robust estimate of model performance and reduces the risk of overfitting to a specific data partition. The tradeoff is increased computation time, especially with hyperparameter tuning, but this was manageable given the size of the dataset and my available resources.
+
+I used RMSE as the performance metric for model selection. RMSE measures the average magnitude of prediction error and is good continuous outcome numerical variables. It penalizes larger errors more heavily, which helps ensure that the model doesn't make misleading predictions.
+
+I chose this performance metric because I wanted to understand how well different model configurations predicted tip percentage, while also identifying which features meaningfully contributed to model performance. While RMSE is a predictive metric, it indirectly supports explanatory goals by highlighting models that generalize well and by discouraging overfitting. Another performance metric I could have fit would have been RSQ, but I am not as familiar with this performance metric, so I chose to stick with RMSE.
+
+The explanatory question was answered, but to a very small degree. My best performing model was my compact model, which retained a performance metric that was .01 better than the other two models. This suggests that the covariate I removed, did not meaningfully improve the models performance to predict tip percentage. The inclusion of an interaction between age and sex did not improve model performance, suggesting the relationship between age and tipping behavior does not vary substantially by gender in this dataset. Overall, while we found some evidence that customer age is related to tipping behavior, the effect is small, and a large portion of variance in tipping remains unexplained.
+
+Selecting model configurations like this allow you to include covariates that are important to your model. This will allow you to have more accurate models. However, explanatory methods are quite time consuming and even after all of the work I did in this section. We found no meaningful effect that the model's improved after removing certain variables. In addition, people can attempt to p-hack by removing covariates just to ensure that the models they fit yield higher predicting models. 

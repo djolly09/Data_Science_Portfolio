@@ -16,3 +16,7 @@ This project explores how customer characteristics and situational factors predi
 
 --- 
 
+
+#### Contact Information
+Email: david@teamjolly.com
+LinkedIn: www.linkedin.com/in/david-jolly-117498293

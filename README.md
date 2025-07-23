@@ -16,6 +16,12 @@ This project explores how customer characteristics and situational factors predi
 
 --- 
 
+## Survey Report
+
+In this project, I created a Qualtrics survey about nutritional knowledge and consumer behavior. I collected participants from Prolific and analyzed the data using Python. I created a data dictionary and generated some basic descriptive statistics. As well as conducted a $Chi^2$ analysis.
+
+---
+
 
 #### Contact Information
 Email: david@teamjolly.com
